@@ -257,9 +257,11 @@
 	};
 };
 
-&hwmon {
+&fan {
 	pinctrl-0 = <&fan_pins>;
 	pinctrl-names = "default";
+
+	status = "okay";
 };
 
 &mdio0 {
