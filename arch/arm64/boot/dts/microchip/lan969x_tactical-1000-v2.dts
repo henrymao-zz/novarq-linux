@@ -7,4 +7,17 @@
 / {
 	model = "Novarq Tactical 1000 v2";
 	compatible = "novarq,tactical-1000-v2", "microchip,lan969x";
+
+	gpio_pwm: pwm {
+		#pwm-cells = <3>;
+		compatible = "pwm-gpio";
+		gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
+	};
+
+	pwm-fan {
+		compatible = "pwm-fan";
+		pinctrl-names = "default";
+		pinctrl-0 = <&fan_pins>;
+		pwms = <&gpio_pwm 0 40000 0>;
+	};
 };

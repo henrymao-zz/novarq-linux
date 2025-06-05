@@ -190,7 +190,7 @@
 
 	fan_pins: fan-pins {
 		pins = "GPIO_25", "GPIO_26";
-		function = "fan";
+		function = "gpio";
 	};
 
 	fc0_pins: fc0-pins {
@@ -255,11 +255,6 @@
 		pins = "GPIO_59";
 		function = "ptpsync_5";
 	};
-};
-
-&hwmon {
-	pinctrl-0 = <&fan_pins>;
-	pinctrl-names = "default";
 };
 
 &mdio0 {
