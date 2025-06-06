@@ -643,6 +643,7 @@ config SENSORS_SPARX5
 config SENSORS_SPARX5_FAN
 	tristate "Sparx5 and LAN969x SoC-s fan controller"
 	depends on ARCH_SPARX5 || ARCH_LAN969X || COMPILE_TEST
+	depends on PWM
 	help
 	  If you say yes here you get support for fan controller
 	  in the Microchip Sparx5 and LAN969x SoC-s.

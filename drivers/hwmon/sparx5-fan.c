@@ -2,8 +2,10 @@
 
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/io.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
+#include <linux/pwm.h>
 
 #define FAN_CFG				0
 #define  FAN_CFG_DUTY_CYCLE		GENMASK(23, 16)
@@ -22,10 +24,37 @@ struct s5_fan_data {
 	struct clk *clk;
 };
 
+static inline struct s5_fan_data *
+s5_pwm_chip_to_data(struct pwm_chip *chip)
+{
+	return pwmchip_get_drvdata(chip);
+}
+
+static int s5_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+                            struct pwm_state *state)
+{
+	struct s5_fan_data *priv = s5_pwm_chip_to_data(chip);
+	bool polarity;
+	u32 val;
+
+	val = readl(priv->base + FAN_CFG);
+	polarity = FIELD_GET(FAN_CFG_INV_POL, val);
+
+	state->polarity = polarity ? PWM_POLARITY_INVERSED : PWM_POLARITY_NORMAL;
+	return 0;
+}
+
+static const struct pwm_ops s5_pwm_ops = {
+	//.apply = aspeed_pwm_apply,
+	.get_state = s5_pwm_get_state,
+};
+
 static int s5_fan_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct s5_fan_data *priv;
+	struct pwm_chip *chip;
+	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -38,6 +67,17 @@ static int s5_fan_probe(struct platform_device *pdev)
 	priv->clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(priv->clk))
 		return PTR_ERR(priv->clk);
+
+	chip = devm_pwmchip_alloc(dev, 1, 0);
+	if (IS_ERR(chip))
+		return PTR_ERR(chip);
+
+	pwmchip_set_drvdata(chip, priv);
+	chip->ops = &s5_pwm_ops;
+
+	ret = devm_pwmchip_add(dev, chip);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to add PWM chip\n");
 
 	return 0;
 }
