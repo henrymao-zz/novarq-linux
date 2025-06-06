@@ -546,6 +546,8 @@
 			compatible = "microchip,sparx5-fan";
 			reg = <0xe2010348 0xc>;
 			clocks = <&fx100_clk>;
+			#pwm-cells = <3>;
+			status = "disabled";
 		};
 
 		serdes: serdes@e3410000 {
