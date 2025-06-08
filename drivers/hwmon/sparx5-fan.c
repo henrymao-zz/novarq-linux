@@ -30,22 +30,53 @@ s5_pwm_chip_to_data(struct pwm_chip *chip)
 	return pwmchip_get_drvdata(chip);
 }
 
-static int s5_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
-                            struct pwm_state *state)
+static int s5_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
+			const struct pwm_state *state)
 {
 	struct s5_fan_data *priv = s5_pwm_chip_to_data(chip);
+	u32 fan_cfg_val, pwm_freq_val;
+	u64 pwm_frequency;
+
+	pwm_freq_val = readl(priv->base + PWM_FREQ);
+	pwm_frequency = clk_get_rate(priv->clk) / (256 * FIELD_GET(PWM_FREQ_PWM_FREQ, pwm_freq_val));
+
+	fan_cfg_val = readl(priv->base + FAN_CFG);
+	fan_cfg_val &= ~FAN_CFG_DUTY_CYCLE;
+	fan_cfg_val |= FIELD_PREP(FAN_CFG_DUTY_CYCLE, (state->duty_cycle * 255) / state->period);
+	fan_cfg_val &= ~FAN_CFG_INV_POL;
+	fan_cfg_val |= FIELD_PREP(FAN_CFG_INV_POL, state->polarity);
+	writel(fan_cfg_val, priv->base + FAN_CFG);
+
+	dev_info(&chip->dev, "desired period: %llu\n", state->period);
+	dev_info(&chip->dev, "desired duty_cycle: %llu\n", state->duty_cycle);
+	dev_info(&chip->dev, "desired polarity: %d\n", state->polarity);
+
+	return 0;
+}
+
+static int s5_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+			    struct pwm_state *state)
+{
+	struct s5_fan_data *priv = s5_pwm_chip_to_data(chip);
+	u32 fan_cfg_val, pwm_freq_val;
 	bool polarity;
-	u32 val;
 
-	val = readl(priv->base + FAN_CFG);
-	polarity = FIELD_GET(FAN_CFG_INV_POL, val);
-
+	fan_cfg_val = readl(priv->base + FAN_CFG);
+	polarity = FIELD_GET(FAN_CFG_INV_POL, fan_cfg_val);
 	state->polarity = polarity ? PWM_POLARITY_INVERSED : PWM_POLARITY_NORMAL;
+	state->enabled = FIELD_GET(FAN_CFG_DUTY_CYCLE, fan_cfg_val) ? true : false;
+
+	pwm_freq_val = readl(priv->base + PWM_FREQ);
+	// (System clock frequency)/(PWM frequency)/256
+	state->period = NSEC_PER_SEC * 256 * FIELD_GET(PWM_FREQ_PWM_FREQ, pwm_freq_val) / clk_get_rate(priv->clk);
+
+	state->duty_cycle = state->period / FIELD_GET(FAN_CFG_DUTY_CYCLE, fan_cfg_val);
+
 	return 0;
 }
 
 static const struct pwm_ops s5_pwm_ops = {
-	//.apply = aspeed_pwm_apply,
+	.apply = s5_pwm_apply,
 	.get_state = s5_pwm_get_state,
 };
 
@@ -68,7 +99,7 @@ static int s5_fan_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->clk))
 		return PTR_ERR(priv->clk);
 
-	chip = devm_pwmchip_alloc(dev, 1, 0);
+	chip = devm_pwmchip_alloc(dev, 1, sizeof(*priv));
 	if (IS_ERR(chip))
 		return PTR_ERR(chip);
 
