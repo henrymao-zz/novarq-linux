@@ -63,6 +63,7 @@
 
 #define SAMA7G5_QSPI0_MAX_SPEED_HZ	200000000
 #define SAMA7G5_QSPI1_SDR_MAX_SPEED_HZ	133000000
+#define LAN966x_QSPI0_MAX_SPEED_HZ      100000000
 
 /* Bitfields in QSPI_CR (Control Register) */
 #define QSPI_CR_QSPIEN                  BIT(0)
@@ -262,6 +263,7 @@ struct atmel_qspi_caps {
 	bool has_ricr;
 	bool octal;
 	bool has_dma;
+	bool has_lan969x;
 };
 
 struct atmel_qspi_ops;
@@ -1123,6 +1125,39 @@ static int atmel_qspi_sama7g5_init(struct atmel_qspi *aq)
 	return ret;
 }
 
+static int lan969x_qspi_init(struct atmel_qspi *aq)
+{
+	u32 val;
+	int ret;
+
+	ret = atmel_qspi_set_gclk(aq);
+	if (ret)
+		return ret;
+
+	atmel_qspi_write(QSPI_CR_DLLON | QSPI_CR_STPCAL, aq, QSPI_CR);
+	ret =  readl_poll_timeout(aq->regs + QSPI_SR2, val,
+				  (val & QSPI_SR2_DLOCK) &&
+				  !(val & QSPI_SR2_CALBSY), 40,
+				  ATMEL_QSPI_TIMEOUT);
+
+	/* Set the QSPI controller by default in Serial Memory Mode */
+	aq->mr |= QSPI_MR_DQSDLYEN;
+	ret = atmel_qspi_set_serial_memory_mode(aq);
+	if (ret < 0)
+		return ret;
+
+	/* Enable the QSPI controller. */
+	atmel_qspi_write(QSPI_CR_QSPIEN, aq, QSPI_CR);
+	ret = readl_poll_timeout(aq->regs + QSPI_SR2, val,
+				 val & QSPI_SR2_QSPIENS, 40,
+				 ATMEL_QSPI_SYNC_TIMEOUT);
+	if (ret)
+		return ret;
+
+	atmel_qspi_write(QSPI_TOUT_TCNTM, aq, QSPI_TOUT);
+	return ret;
+}
+
 static int atmel_qspi_sama7g5_setup(struct spi_device *spi)
 {
 	struct atmel_qspi *aq = spi_controller_get_devdata(spi->controller);
@@ -1130,7 +1165,10 @@ static int atmel_qspi_sama7g5_setup(struct spi_device *spi)
 	/* The controller can communicate with a single peripheral device (target). */
 	aq->target_max_speed_hz = spi->max_speed_hz;
 
-	return atmel_qspi_sama7g5_init(aq);
+	if (aq->caps->has_lan969x)
+		return lan969x_qspi_init(aq);
+	else
+		return atmel_qspi_sama7g5_init(aq);
 }
 
 static int atmel_qspi_setup(struct spi_device *spi)
@@ -1615,6 +1653,13 @@ static const struct atmel_qspi_caps atmel_sama7g5_qspi_caps = {
 	.has_dma = true,
 };
 
+static const struct atmel_qspi_caps microchip_lan969x_qspi_caps = {
+	.max_speed_hz = LAN966x_QSPI0_MAX_SPEED_HZ,
+	.has_gclk = true,
+	.has_dma = true,
+	.has_lan969x = true,
+};
+
 static const struct of_device_id atmel_qspi_dt_ids[] = {
 	{
 		.compatible = "atmel,sama5d2-qspi",
@@ -1631,6 +1676,10 @@ static const struct of_device_id atmel_qspi_dt_ids[] = {
 	{
 		.compatible = "microchip,sama7g5-qspi",
 		.data = &atmel_sama7g5_qspi_caps,
+	},
+	{
+		.compatible = "microchip,lan9691-qspi0",
+		.data = &microchip_lan969x_qspi_caps,
 	},
 
 	{ /* sentinel */ }
