@@ -417,6 +417,28 @@
 		spi-tx-bus-width = <1>;
 		spi-rx-bus-width = <4>;
 		m25p,fast-read;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "fip";
+				reg = <0x00000000 0x000f0000>;
+			};
+
+			partition@f0000 {
+				label = "fip.bak";
+				reg = <0x000f0000 0x000f0000>;
+			};
+
+			partition@1e0000 {
+				compatible = "u-boot,env";
+				label = "u-boot-env";
+				reg = <0x001e0000 0x00010000>;
+			};
+		};
 	};
 };
 
