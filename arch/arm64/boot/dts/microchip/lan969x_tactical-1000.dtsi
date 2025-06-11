@@ -3,6 +3,7 @@
 /dts-v1/;
 
 #include "lan969x.dtsi"
+#include <dt-bindings/leds/common.h>
 
 / {
 	aliases {
@@ -54,6 +55,13 @@
 
 	leds {
 		compatible = "gpio-leds";
+
+		led-status {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio 61 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
 
 		led-s6-green {
 			label = "s6:green";
