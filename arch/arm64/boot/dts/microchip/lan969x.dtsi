@@ -88,7 +88,7 @@
 		ranges;
 
 		otp0: otp@e0021000 {
-			compatible = "microchip,lan969x-otp";
+			compatible = "microchip,lan9691-otpc";
 			reg = <0xe0021000 0x300>;
 		};
 
