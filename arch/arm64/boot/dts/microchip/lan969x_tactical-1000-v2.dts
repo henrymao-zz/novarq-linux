@@ -41,3 +41,99 @@
 		function = "gpio";
 	};
 };
+
+&port0 {
+	phy-handle = <&phy7>;
+};
+
+&port1 {
+	phy-handle = <&phy6>;
+};
+
+&port2 {
+	phy-handle = <&phy5>;
+};
+
+&port3 {
+	phy-handle = <&phy4>;
+};
+
+&port4 {
+	phy-handle = <&phy11>;
+};
+
+&port5 {
+	phy-handle = <&phy10>;
+};
+
+&port6 {
+	phy-handle = <&phy9>;
+};
+
+&port7 {
+	phy-handle = <&phy8>;
+};
+
+&port8 {
+	phy-handle = <&phy15>;
+};
+
+&port9 {
+	phy-handle = <&phy14>;
+};
+
+&port10 {
+	phy-handle = <&phy13>;
+};
+
+&port11 {
+	phy-handle = <&phy12>;
+};
+
+&port12 {
+	phy-handle = <&phy19>;
+};
+
+&port13 {
+	phy-handle = <&phy18>;
+};
+
+&port14 {
+	phy-handle = <&phy17>;
+};
+
+&port15 {
+	phy-handle = <&phy16>;
+};
+
+&port16 {
+	phy-handle = <&phy23>;
+};
+
+&port17 {
+	phy-handle = <&phy22>;
+};
+
+&port18 {
+	phy-handle = <&phy21>;
+};
+
+&port19 {
+	phy-handle = <&phy20>;
+};
+
+&port20 {
+	phy-handle = <&phy27>;
+};
+
+&port21 {
+	phy-handle = <&phy26>;
+};
+
+&port22 {
+	phy-handle = <&phy25>;
+};
+
+&port23 {
+	phy-handle = <&phy24>;
+};
