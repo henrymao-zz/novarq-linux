@@ -730,7 +730,7 @@
 	};
 };
 
-&usb0 {
+&usb {
 	status = "okay";
 	pinctrl-0 = <&usb_ulpi_pins>, <&usb_rst_pins>, <&usb_over_pins>, <&usb_power_pins>;
 	pinctrl-names = "default";
