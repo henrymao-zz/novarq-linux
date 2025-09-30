@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+
+/dts-v1/;
+
+#include "lan969x-tactical-1000.dtsi"
+
+/ {
+	cpu_gpio_pwm: cpu-gpio-pwm {
+		#pwm-cells = <3>;
+		compatible = "pwm-gpio";
+		gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
+	};
+
+	cpu-pwm-fan {
+		compatible = "pwm-fan";
+		pinctrl-names = "default";
+		pinctrl-0 = <&fan_pins>;
+		pwms = <&cpu_gpio_pwm 0 40000 0>;
+	};
+
+	case_gpio_pwm: case-gpio-pwm {
+		#pwm-cells = <3>;
+		compatible = "pwm-gpio";
+		gpios = <&gpio 65 GPIO_ACTIVE_LOW>;
+	};
+
+	case-pwm-fan {
+		compatible = "pwm-fan";
+		pinctrl-names = "default";
+		pinctrl-0 = <&case_fan_pins>;
+		pwms = <&case_gpio_pwm 0 40000 0>;
+	};
+};
