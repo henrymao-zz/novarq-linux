@@ -102,6 +102,14 @@
 		otp: otp@e0021000 {
 			compatible = "microchip,lan9691-otpc";
 			reg = <0xe0021000 0x1000>;
+
+			nvmem-layout {
+				compatible = "microchip,otp-layout";
+
+				base_mac_address: base-mac-address {
+					#nvmem-cell-cells = <1>;
+				};
+			};
 		};
 
 		flx0: flexcom@e0040000 {
@@ -381,6 +389,8 @@
 				     <GIC_SPI  9 IRQ_TYPE_LEVEL_HIGH>;
 			resets = <&reset 0>;
 			reset-names = "switch";
+			nvmem-cells = <&base_mac_address 0>;
+			nvmem-cell-names = "mac-address";
 			status = "disabled";
 		};
 
