@@ -4,8 +4,13 @@
  * Copyright (c) 2021 Microchip Technology Inc. and its subsidiaries.
  */
 
+#include <net/addrconf.h>
+#include <net/switchdev.h>
+
 #include "sparx5_main_regs.h"
 #include "sparx5_main.h"
+
+#include "lan969x/lan969x.h"
 
 #define XTR_EOF_0     ntohl((__force __be32)0x80000000u)
 #define XTR_EOF_1     ntohl((__force __be32)0x80000001u)
@@ -19,6 +24,45 @@
 #define XTR_VALID_BYTES(x)      (4 - ((x) & 3))
 
 #define INJ_TIMEOUT_NS 50000
+
+static const u32 sparx5_ifh[IFH_MAX][2] = {
+	[IFH_MISC_CPU_MASK_DPORT]  = {  29,  8 },
+	[IFH_MISC_PIPELINE_PT]     = {  37,  5 },
+	[IFH_MISC_PIPELINE_ACT]    = {  42,  3 },
+	[IFH_FWD_SRC_PORT]         = {  46,  7 },
+	[IFH_FWD_SFLOW_ID]         = {  57,  7 },
+	[IFH_FWD_UPDATE_FCS]       = {  67,  1 },
+	[IFH_FWD_AFI]              = {  72,  1 },
+	[IFH_VSTAX_REW_CMD]        = { 105, 11 },
+	[IFH_VSTAX_INGR_DROP_MODE] = { 128,  1 },
+	[IFH_VSTAX_CL_QOS]         = { 129,  3 },
+	[IFH_VSTAX_SP]             = { 132,  1 },
+	[IFH_VSTAX_RSV]            = { 152,  1 },
+	[IFH_DST_PDU_TYPE]         = { 191,  4 },
+	[IFH_DST_PDU_W16_OFFSET]   = { 195,  6 },
+	[IFH_TS_TSTAMP]            = { 232, 40 },
+};
+
+u32 sparx5_get_ifh_field_pos(enum sparx5_ifh_enum idx)
+{
+	return sparx5_ifh[idx][0];
+}
+
+u32 sparx5_get_ifh_field_width(enum sparx5_ifh_enum idx)
+{
+	return sparx5_ifh[idx][1];
+}
+
+u32 sparx5_get_packet_pipeline_pt(enum sparx5_packet_pipeline_pt pt)
+{
+	u32 pipeline_pts[SPX5_PACKET_PIPELINE_PT_MAX] = {
+		 0,  0,  0,  2,  3,  4,  0,  6,  7,
+		 0,  9,  0, 11,  0, 13, 14,  0, 16,
+		17, 18, 19, 20, 21, 22,  0, 24,  0
+	};
+
+	return pipeline_pts[pt];
+}
 
 void sparx5_xtr_flush(struct sparx5 *sparx5, u8 grp)
 {
@@ -34,7 +78,10 @@ void sparx5_xtr_flush(struct sparx5 *sparx5, u8 grp)
 
 void sparx5_ifh_parse(struct sparx5 *sparx5, u32 *ifh, struct frame_info *info)
 {
+	const struct sparx5_ops *ops = &sparx5->data->ops;
 	u8 *xtr_hdr = (u8 *)ifh;
+
+	u32 width = ops->get_ifh_field_width(IFH_FWD_SRC_PORT);
 
 	/* FWD is bit 45-72 (28 bits), but we only read the 27 LSB for now */
 	u32 fwd =
@@ -43,8 +90,7 @@ void sparx5_ifh_parse(struct sparx5 *sparx5, u32 *ifh, struct frame_info *info)
 		((u32)xtr_hdr[29] <<  8) |
 		((u32)xtr_hdr[30] <<  0);
 	fwd = (fwd >> 5);
-	info->src_port = spx5_field_get(GENMASK(is_sparx5(sparx5) ? 7 : 6, 1),
-					fwd);
+	info->src_port = spx5_field_get(GENMASK(width, 1), fwd);
 
 	/*
 	 * Bit 270-271 are occasionally unexpectedly set by the hardware,
@@ -56,10 +102,12 @@ void sparx5_ifh_parse(struct sparx5 *sparx5, u32 *ifh, struct frame_info *info)
 		((u64)xtr_hdr[4] <<  8) |
 		((u64)xtr_hdr[5] <<  0);
 }
+EXPORT_SYMBOL_GPL(sparx5_ifh_parse);
 
 static void sparx5_xtr_grp(struct sparx5 *sparx5, u8 grp, bool byte_swap)
 {
 	bool eof_flag = false, pruned_flag = false, abort_flag = false;
+	const struct sparx5_consts *consts = &sparx5->data->consts;
 	struct net_device *netdev;
 	struct sparx5_port *port;
 	struct frame_info fi;
@@ -76,7 +124,7 @@ static void sparx5_xtr_grp(struct sparx5 *sparx5, u8 grp, bool byte_swap)
 	sparx5_ifh_parse(sparx5, ifh, &fi);
 
 	/* Map to port netdev */
-	port = fi.src_port < sparx5->data->consts->n_ports ?
+	port = fi.src_port < consts->chip_ports ?
 		sparx5->ports[fi.src_port] : NULL;
 	if (!port || !port->ndev) {
 		dev_err(sparx5->dev, "Data on inactive port %d\n", fi.src_port);
@@ -151,13 +199,17 @@ static void sparx5_xtr_grp(struct sparx5 *sparx5, u8 grp, bool byte_swap)
 	/* Everything we see on an interface that is in the HW bridge
 	 * has already been forwarded
 	 */
-	if (test_bit(port->portno, sparx5->bridge_mask))
+	if (test_bit(port->portno, sparx5->bridge_mask)) {
 		skb->offload_fwd_mark = 1;
+
+		if (!sparx5_skb_offloaded(sparx5, fi.src_port, skb))
+			skb->offload_fwd_mark = 0;
+	}
 
 	/* Finish up skb */
 	skb_put(skb, byte_cnt - ETH_FCS_LEN);
 	eth_skb_pad(skb);
-	sparx5_ptp_rxtstamp(sparx5, skb, fi.timestamp);
+	sparx5_ptp_rxtstamp(sparx5, skb, fi.src_port, fi.timestamp);
 	skb->protocol = eth_type_trans(skb, netdev);
 	netdev->stats.rx_bytes += skb->len;
 	netdev->stats.rx_packets++;
@@ -177,7 +229,7 @@ static int sparx5_inject(struct sparx5 *sparx5,
 	if (!(QS_INJ_STATUS_FIFO_RDY_GET(val) & BIT(grp))) {
 		pr_err_ratelimited("Injection: Queue not ready: 0x%lx\n",
 				   QS_INJ_STATUS_FIFO_RDY_GET(val));
-		return -EBUSY;
+		return NETDEV_TX_BUSY;
 	}
 
 	/* Indicate SOF */
@@ -224,6 +276,8 @@ static int sparx5_inject(struct sparx5 *sparx5,
 			      HRTIMER_MODE_REL);
 	}
 
+	sparx5_consume_skb(skb);
+
 	return NETDEV_TX_OK;
 }
 
@@ -235,17 +289,21 @@ netdev_tx_t sparx5_port_xmit_impl(struct sk_buff *skb, struct net_device *dev)
 	const struct sparx5_ops *ops;
 	u32 ifh[IFH_LEN];
 	netdev_tx_t ret;
+	unsigned int skb_len = skb->len;
 
-	ops = sparx5->data->ops;
+	ops = &sparx5->data->ops;
 
 	memset(ifh, 0, IFH_LEN * 4);
-	sparx5_set_port_ifh(sparx5, ifh, port->portno);
+#ifndef CONFIG_SPARX5_SWITCH_APPL
+	sparx5_set_port_ifh(sparx5, ifh, port->portno,
+			    SPX5_PACKET_PIPELINE_PT_ANA_DONE);
 
 	if (sparx5->ptp && skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
 		if (sparx5_ptp_txtstamp_request(port, skb) < 0)
 			return NETDEV_TX_BUSY;
 
-		sparx5_set_port_ifh_rew_op(ifh, SPARX5_SKB_CB(skb)->rew_op);
+		sparx5_set_port_ifh_rew_op(sparx5, ifh,
+					   SPARX5_SKB_CB(skb)->rew_op);
 		sparx5_set_port_ifh_pdu_type(sparx5, ifh,
 					     SPARX5_SKB_CB(skb)->pdu_type);
 		sparx5_set_port_ifh_pdu_w16_offset(sparx5, ifh,
@@ -254,34 +312,28 @@ netdev_tx_t sparx5_port_xmit_impl(struct sk_buff *skb, struct net_device *dev)
 					      SPARX5_SKB_CB(skb)->ts_id);
 	}
 
+#else
+	skb_pull_inline(skb, IFH_ENCAP_LEN);
+	memcpy(ifh, skb->data, IFH_LEN * 4);
+	skb_pull_inline(skb, IFH_LEN * 4);
+#endif
 	skb_tx_timestamp(skb);
 	spin_lock(&sparx5->tx_lock);
 	if (sparx5->fdma_irq > 0)
-		ret = ops->fdma_xmit(sparx5, ifh, skb, dev);
+		ret = ops->fdma_xmit(sparx5, ifh, skb);
 	else
 		ret = sparx5_inject(sparx5, ifh, skb, dev);
 	spin_unlock(&sparx5->tx_lock);
 
-	if (ret == -EBUSY)
+	if (ret == NETDEV_TX_BUSY)
 		goto busy;
 	if (ret < 0)
 		goto drop;
 
-	if (!is_sparx5(sparx5))
-		/* When lan969x and TX_OK, stats and SKB consumption is handled
-		 * in the TX completion loop, so dont go any further.
-		 */
-		return NETDEV_TX_OK;
-
-	stats->tx_bytes += skb->len;
+	stats->tx_bytes += skb_len;
 	stats->tx_packets++;
 	sparx5->tx.packets++;
 
-	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP &&
-	    SPARX5_SKB_CB(skb)->rew_op == IFH_REW_OP_TWO_STEP_PTP)
-		return NETDEV_TX_OK;
-
-	dev_consume_skb_any(skb);
 	return NETDEV_TX_OK;
 drop:
 	stats->tx_dropped++;
@@ -293,6 +345,25 @@ busy:
 	    SPARX5_SKB_CB(skb)->rew_op == IFH_REW_OP_TWO_STEP_PTP)
 		sparx5_ptp_txtstamp_release(port, skb);
 	return NETDEV_TX_BUSY;
+}
+
+netdev_tx_t sparx5_port_xmit(struct sparx5_port *port, struct sk_buff *skb,
+			     u32 ifh[IFH_LEN])
+{
+	struct sparx5 *sparx5 = port->sparx5;
+	const struct sparx5_ops *ops;
+	netdev_tx_t ret;
+
+	ops = &sparx5->data->ops;
+
+	spin_lock(&sparx5->tx_lock);
+	if (sparx5->fdma_irq > 0)
+		ret = ops->fdma_xmit(sparx5, ifh, skb);
+	else
+		ret = sparx5_inject(sparx5, ifh, skb, port->ndev);
+	spin_unlock(&sparx5->tx_lock);
+
+	return ret;
 }
 
 static enum hrtimer_restart sparx5_injection_timeout(struct hrtimer *tmr)
@@ -330,9 +401,8 @@ int sparx5_manual_injection_mode(struct sparx5 *sparx5)
 		sparx5, QS_INJ_GRP_CFG(INJ_QUEUE));
 
 	/* CPU ports capture setup */
-	for (portno = sparx5_get_internal_port(sparx5, SPX5_PORT_CPU_0);
-	     portno <= sparx5_get_internal_port(sparx5, SPX5_PORT_CPU_1);
-	     portno++) {
+	for (portno = sparx5_get_internal_port(sparx5, PORT_CPU_0);
+	     portno <= sparx5_get_internal_port(sparx5, PORT_CPU_1); portno++) {
 		/* ASM CPU port: No preamble, IFH, enable padding */
 		spx5_wr(ASM_PORT_CFG_PAD_ENA_SET(1) |
 			ASM_PORT_CFG_NO_PREAMBLE_ENA_SET(1) |
@@ -375,6 +445,52 @@ irqreturn_t sparx5_xtr_handler(int irq, void *_sparx5)
 
 void sparx5_port_inj_timer_setup(struct sparx5_port *port)
 {
-	hrtimer_setup(&port->inj_timer, sparx5_injection_timeout, CLOCK_MONOTONIC,
-		      HRTIMER_MODE_REL);
+	hrtimer_init(&port->inj_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	port->inj_timer.function = sparx5_injection_timeout;
+}
+
+void sparx5_consume_skb(struct sk_buff *skb)
+{
+	bool ptp = false;
+
+	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP &&
+	    SPARX5_SKB_CB(skb)->rew_op == IFH_REW_OP_TWO_STEP_PTP)
+		ptp = true;
+
+	if (!ptp)
+		dev_consume_skb_any(skb);
+}
+
+bool sparx5_skb_offloaded(struct sparx5 *sparx5, u32 port, struct sk_buff *skb)
+{
+	u32 val;
+
+	/* IGMP and MLD frames are not forwarded by hardware when
+	 * multicast snooping is enabled. Therefore, do not mark these
+	 * frames as offloaded, allowing the software to forward them
+	 * as needed.
+	 */
+
+	val = spx5_rd(sparx5, ANA_CL_CAPTURE_CFG(port));
+	if (!(val & (ANA_CL_CAPTURE_CFG_CPU_IGMP_REDIR_ENA |
+		     ANA_CL_CAPTURE_CFG_CPU_MLD_REDIR_ENA)))
+		return true;
+
+	if (eth_type_vlan(skb->protocol)) {
+		skb = skb_vlan_untag(skb);
+		if (unlikely(!skb))
+			return false;
+	}
+
+	if (skb->protocol == htons(ETH_P_IP) &&
+	    ip_hdr(skb)->protocol == IPPROTO_IGMP)
+		return false;
+
+	if (IS_ENABLED(CONFIG_IPV6) &&
+	    skb->protocol == htons(ETH_P_IPV6) &&
+	    ipv6_addr_is_multicast(&ipv6_hdr(skb)->daddr) &&
+	    !ipv6_mc_check_mld(skb))
+		return false;
+
+	return true;
 }

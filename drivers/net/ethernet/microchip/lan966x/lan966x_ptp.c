@@ -399,6 +399,16 @@ int lan966x_ptp_txtstamp_request(struct lan966x_port *port,
 	u8 rew_op;
 
 	lan966x_ptp_classify(port, skb, &rew_op, &pdu_type);
+
+	/* If the packet is not a ptp packet, ptp_classify will return
+	 * IFH_REW_OP_NOOP. However if a socket option is used to enable
+	 * hardware tx timestamping, we still want to timestamp the packet,
+	 * regardless of the packet type.
+	 */
+	if (rew_op == IFH_REW_OP_NOOP &&
+	    port->ptp_tx_cmd == IFH_REW_OP_TWO_STEP_PTP)
+		rew_op = IFH_REW_OP_TWO_STEP_PTP;
+
 	LAN966X_SKB_CB(skb)->rew_op = rew_op;
 	LAN966X_SKB_CB(skb)->pdu_type = pdu_type;
 
@@ -838,6 +848,10 @@ static int lan966x_ptp_perout(struct ptp_clock_info *ptp,
 	bool pps = false;
 	int pin;
 
+	if (rq->perout.flags & ~(PTP_PEROUT_DUTY_CYCLE |
+				 PTP_PEROUT_PHASE))
+		return -EOPNOTSUPP;
+
 	pin = ptp_find_pin(phc->clock, PTP_PF_PEROUT, rq->perout.index);
 	if (pin == -1 || pin >= LAN966X_PHC_PINS_NUM)
 		return -EINVAL;
@@ -936,6 +950,12 @@ static int lan966x_ptp_extts(struct ptp_clock_info *ptp,
 	if (lan966x->ptp_ext_irq <= 0)
 		return -EOPNOTSUPP;
 
+	/* Reject requests with unsupported flags */
+	if (rq->extts.flags & ~(PTP_ENABLE_FEATURE |
+				PTP_RISING_EDGE |
+				PTP_STRICT_FLAGS))
+		return -EOPNOTSUPP;
+
 	pin = ptp_find_pin(phc->clock, PTP_PF_EXTTS, rq->extts.index);
 	if (pin == -1 || pin >= LAN966X_PHC_PINS_NUM)
 		return -EINVAL;
@@ -991,10 +1011,6 @@ static struct ptp_clock_info lan966x_ptp_clock_info = {
 	.n_per_out	= LAN966X_PHC_PINS_NUM,
 	.n_ext_ts	= LAN966X_PHC_PINS_NUM,
 	.n_pins		= LAN966X_PHC_PINS_NUM,
-	.supported_extts_flags = PTP_RISING_EDGE |
-				 PTP_STRICT_FLAGS,
-	.supported_perout_flags = PTP_PEROUT_DUTY_CYCLE |
-				  PTP_PEROUT_PHASE,
 };
 
 static int lan966x_ptp_phc_init(struct lan966x *lan966x,
@@ -1126,5 +1142,5 @@ void lan966x_ptp_rxtstamp(struct lan966x *lan966x, struct sk_buff *skb,
 u32 lan966x_ptp_get_period_ps(void)
 {
 	/* This represents the system clock period in picoseconds */
-	return 15125;
+	return 6038;
 }

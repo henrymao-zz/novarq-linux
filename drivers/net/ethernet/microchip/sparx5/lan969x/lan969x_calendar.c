@@ -6,8 +6,10 @@
 
 #include "lan969x.h"
 
-#define LAN969X_DSM_CAL_DEVS_PER_TAXI 10
+#define LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI 10
 #define LAN969X_DSM_CAL_TAXIS 5
+#define LAN969X_DSM_CAL_LEN SPX5_DSM_CAL_LEN
+#define LAN969X_DSM_CAL_SLOT_UNUSED LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI
 
 enum lan969x_dsm_cal_dev {
 	DSM_CAL_DEV_2G5,
@@ -21,39 +23,40 @@ enum lan969x_dsm_cal_dev {
  * (10G, 5G, 2.5G, or 1G or less).
  */
 struct lan969x_dsm_cal_dev_speed {
-	/* Number of devices that requires this speed. */
-	u32 n_devs;
+	/* Number of devices that requires this speed */
+	u32 dev_cnt;
 
-	/* Array of devices that requires this speed. */
-	u32 devs[LAN969X_DSM_CAL_DEVS_PER_TAXI];
+	/* List of devices that requires this speed. Only first 'dev_cnt' are
+	 * valid.
+	 */
+	u32 devs[LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI];
 
-	/* Number of slots required for one device running this speed. */
-	u32 n_slots;
+	/* Number of slots required for one device running this speed */
+	u32 slots_required;
 
-	/* Gap between two slots for one device running this speed. */
-	u32 gap;
+	/* Number of slots between two slots for one device running this speed. */
+	u32 slots_between_repeats;
 };
 
-static u32
-lan969x_taxi_ports[LAN969X_DSM_CAL_TAXIS][LAN969X_DSM_CAL_DEVS_PER_TAXI] = {
-	{  0,  4,  1,  2,  3,  5,  6,  7, 28, 29 },
-	{  8, 12,  9, 13, 10, 11, 14, 15, 99, 99 },
-	{ 16, 20, 17, 21, 18, 19, 22, 23, 99, 99 },
-	{ 24, 25, 99, 99, 99, 99, 99, 99, 99, 99 },
-	{ 26, 27, 99, 99, 99, 99, 99, 99, 99, 99 }
-};
-
-static int lan969x_dsm_cal_idx_get(u32 *calendar, u32 cal_len, u32 *cal_idx)
+static int lan969x_dsm_cal_idx_find_next_free(u32 taxi, u32 *calendar,
+					      u32 cal_len, u32 *cal_idx,
+					      u32 dev)
 {
-	if (*cal_idx >= cal_len)
+	if (*cal_idx >= cal_len) {
+		pr_err("Taxi %u, dev %u: cal_idx (%u) >= cal_len (%u) on entry to function",
+		       taxi, dev, *cal_idx, cal_len);
 		return -EINVAL;
+	}
 
 	do {
-		if (calendar[*cal_idx] == SPX5_DSM_CAL_EMPTY)
+		if (calendar[*cal_idx] == LAN969X_DSM_CAL_SLOT_UNUSED)
 			return 0;
 
 		(*cal_idx)++;
 	} while (*cal_idx < cal_len);
+
+	pr_err("Taxi %u, dev %u: No free entries found in calendar of length %u",
+	       taxi, dev, cal_len);
 
 	return -ENOENT;
 }
@@ -74,118 +77,166 @@ static int lan969x_dsm_cal_get_speed(enum lan969x_dsm_cal_dev dev)
 					 1000);
 }
 
-int lan969x_dsm_calendar_calc(struct sparx5 *sparx5, u32 taxi,
-			      struct sparx5_calendar_data *data)
+static void lan969x_dsm_cal_print(struct lan969x_dsm_cal_dev_speed *speeds)
 {
-	struct lan969x_dsm_cal_dev_speed dev_speeds[DSM_CAL_DEV_MAX] = {};
-	u32 cal_len, n_slots, taxi_bw, n_devs = 0, required_bw  = 0;
-	struct lan969x_dsm_cal_dev_speed *speed;
-	int err;
+	for (int idx = 0; idx < DSM_CAL_DEV_MAX; idx++) {
+		struct lan969x_dsm_cal_dev_speed *speed = &speeds[idx];
+		char buf[LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI * 4];
+		int size = 0;
+
+		buf[0] = '\0';
+		for (u32 dev = 0; dev < speed->dev_cnt; dev++) {
+			size += snprintf(buf + size, sizeof(buf) - size, " %u ",
+					 speed->devs[dev]);
+		}
+
+		pr_debug("Speed = %5u, dev_cnt = %u, slots_required = %u, slots_between_repeats = %u, devs = %s",
+			 lan969x_dsm_cal_get_speed(idx), speed->dev_cnt,
+			 speed->slots_required, speed->slots_between_repeats,
+			 buf);
+	}
+}
+
+int lan969x_dsm_calendar_calc(struct sparx5 *sparx5, u32 taxi,
+			      struct sparx5_calendar_data *data,
+			      u32 *calendar_len)
+{
+	u32 required_bw  = 0, active_dev_cnt = 0, delay = 0, bw_per_slot = 0;
+	struct lan969x_dsm_cal_dev_speed dev_speed[DSM_CAL_DEV_MAX] = {}, *d;
+	const struct sparx5_consts *consts = &sparx5->data->consts;
+	u32 cal_len, speed, idx, cal_idx, slots_required, taxi_bw;
+	bool works;
 
 	/* Maximum bandwidth for this taxi */
-	taxi_bw = (128 * 1000000) / sparx5_clk_period(sparx5->coreclock);
+	taxi_bw = ((128 * 1000000) / sparx5_clk_period(sparx5->coreclock)) /
+		  (1 + 1 / 20);
 
-	memcpy(data->taxi_ports, &lan969x_taxi_ports[taxi],
-	       LAN969X_DSM_CAL_DEVS_PER_TAXI * sizeof(u32));
+	memcpy(data->taxi_ports, sparx5->data->ops.get_taxi(taxi),
+	       LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI * sizeof(u32));
 
-	for (int i = 0; i < LAN969X_DSM_CAL_DEVS_PER_TAXI; i++) {
+	for (int i = 0; i < LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI; i++) {
 		u32 portno = data->taxi_ports[i];
-		enum sparx5_cal_bw bw;
 
-		bw = sparx5_get_port_cal_speed(sparx5, portno);
-
-		if (portno < sparx5->data->consts->n_ports_all)
-			data->taxi_speeds[i] = sparx5_cal_speed_to_value(bw);
+		if (portno < consts->chip_ports_all)
+			data->taxi_speeds[i] = sparx5_cal_speed_to_value(sparx5_get_port_cal_speed(sparx5, portno));
 		else
 			data->taxi_speeds[i] = 0;
 	}
 
 	/* Determine the different port types (10G, 5G, 2.5G, <= 1G) in the
-	 * this taxi map.
+	 * this taxi map
 	 */
-	for (int i = 0; i < LAN969X_DSM_CAL_DEVS_PER_TAXI; i++) {
-		u32 taxi_speed = data->taxi_speeds[i];
-		enum lan969x_dsm_cal_dev dev;
+	for (u32 dev = 0; dev < LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI; dev++) {
+		speed = data->taxi_speeds[dev];
 
-		if (taxi_speed == 0)
+		if (speed == 0)
 			continue;
 
-		required_bw += taxi_speed;
+		required_bw += speed;
 
-		dev = lan969x_dsm_cal_get_dev(taxi_speed);
-		speed = &dev_speeds[dev];
-		speed->devs[speed->n_devs++] = i;
-		n_devs++;
+		idx = lan969x_dsm_cal_get_dev(speed);
+		d = &dev_speed[idx];
+		d->devs[d->dev_cnt++] = dev;
+		active_dev_cnt++;
 	}
 
+	pr_debug("Required bandwitdh: %u, total taxi (%u) bandwidth: %u",
+		 required_bw, taxi, taxi_bw);
+
 	if (required_bw > taxi_bw) {
-		pr_err("Required bandwidth: %u is higher than total taxi bandwidth: %u",
-		       required_bw, taxi_bw);
+		pr_err("Required bandwitdh: %u is higher than total taxi (%u) bandwidth: %u",
+		       required_bw, taxi, taxi_bw);
 		return -EINVAL;
 	}
 
-	if (n_devs == 0) {
-		data->schedule[0] = SPX5_DSM_CAL_EMPTY;
+	if (active_dev_cnt == 0) {
+		*calendar_len = 1;
+		data->schedule[0] = LAN969X_DSM_CAL_SLOT_UNUSED;
 		return 0;
 	}
 
-	cal_len = n_devs;
+	/* The calendar needs at least one slot per device. */
+	cal_len = active_dev_cnt;
+
+	/* And it needs to be at least one longer than the delay. */
+	if (cal_len < delay)
+		cal_len = delay + 1;
 
 	/* Search for a calendar length that fits all active devices. */
-	while (cal_len < SPX5_DSM_CAL_LEN) {
-		u32 bw_per_slot = taxi_bw / cal_len;
+	while (cal_len < LAN969X_DSM_CAL_LEN) {
+		/* Use truncating division here. */
+		bw_per_slot = taxi_bw / cal_len;
 
-		n_slots = 0;
+		slots_required = 0;
+		works = true;
+		for (idx = 0; idx < DSM_CAL_DEV_MAX; idx++) {
+			d = &dev_speed[idx];
 
-		for (int i = 0; i < DSM_CAL_DEV_MAX; i++) {
-			speed = &dev_speeds[i];
-
-			if (speed->n_devs == 0)
+			if (d->dev_cnt == 0)
 				continue;
 
-			required_bw = lan969x_dsm_cal_get_speed(i);
-			speed->n_slots = DIV_ROUND_UP(required_bw, bw_per_slot);
+			required_bw = lan969x_dsm_cal_get_speed(idx);
 
-			if (speed->n_slots)
-				speed->gap = DIV_ROUND_UP(cal_len,
-							  speed->n_slots);
-			else
-				speed->gap = 0;
+			d->slots_required =
+				DIV_ROUND_UP(required_bw, bw_per_slot);
 
-			n_slots += speed->n_slots * speed->n_devs;
+			if (d->slots_required) {
+				d->slots_between_repeats = DIV_ROUND_UP(cal_len, d->slots_required);
+				/* Delay and slots_between_repeats may not be the same. */
+				if (d->slots_between_repeats == delay) {
+					/* Calendar length doesn't work. */
+					cal_len++;
+					works = false;
+					break;
+				}
+
+				slots_required +=
+					d->dev_cnt * d->slots_required;
+			} else {
+				d->slots_between_repeats = 0;
+			}
 		}
 
-		if (n_slots <= cal_len)
+		if (!works)
+			continue;
+
+		if (slots_required <= cal_len)
 			break; /* Found a suitable calendar length. */
 
 		/* Not good enough yet. */
-		cal_len = n_slots;
+		cal_len = slots_required;
 	}
 
-	if (cal_len > SPX5_DSM_CAL_LEN) {
+	if (cal_len > LAN969X_DSM_CAL_LEN) {
 		pr_err("Invalid length: %u for taxi: %u", cal_len, taxi);
 		return -EINVAL;
 	}
 
-	for (u32 i = 0; i < SPX5_DSM_CAL_LEN; i++)
-		data->schedule[i] = SPX5_DSM_CAL_EMPTY;
+	lan969x_dsm_cal_print(dev_speed);
 
-	/* Place the remaining devices */
-	for (u32 i = 0; i < DSM_CAL_DEV_MAX; i++) {
-		speed = &dev_speeds[i];
-		for (u32 dev = 0; dev < speed->n_devs; dev++) {
-			u32 idx = 0;
+	for (cal_idx = 0; cal_idx < cal_len; cal_idx++)
+		data->schedule[cal_idx] = LAN969X_DSM_CAL_SLOT_UNUSED;
 
-			for (n_slots = 0; n_slots < speed->n_slots; n_slots++) {
-				err = lan969x_dsm_cal_idx_get(data->schedule,
-							      cal_len, &idx);
-				if (err)
-					return err;
-				data->schedule[idx] = speed->devs[dev];
-				idx += speed->gap;
+	/* Place the remaining devices. Start with the fastest. */
+	for (idx = 0; idx < DSM_CAL_DEV_MAX; idx++) {
+		d = &dev_speed[idx];
+		for (u32 dev = 0; dev < d->dev_cnt; dev++) {
+			cal_idx = 0;
+			for (slots_required = 0;
+			     slots_required < d->slots_required;
+			     slots_required++) {
+				lan969x_dsm_cal_idx_find_next_free(taxi,
+								   data->schedule,
+								   cal_len,
+								   &cal_idx,
+								   d->devs[dev]);
+				data->schedule[cal_idx] = d->devs[dev];
+				cal_idx += d->slots_between_repeats;
 			}
 		}
 	}
+
+	*calendar_len = cal_len;
 
 	return 0;
 }

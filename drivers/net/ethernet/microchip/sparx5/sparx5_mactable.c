@@ -30,17 +30,6 @@
 #define TABLE_UPDATE_SLEEP_US 10
 #define TABLE_UPDATE_TIMEOUT_US 100000
 
-struct sparx5_mact_entry {
-	struct list_head list;
-	unsigned char mac[ETH_ALEN];
-	u32 flags;
-#define MAC_ENT_ALIVE	BIT(0)
-#define MAC_ENT_MOVED	BIT(1)
-#define MAC_ENT_LOCK	BIT(2)
-	u16 vid;
-	u16 port;
-};
-
 static int sparx5_mact_get_status(struct sparx5 *sparx5)
 {
 	return spx5_rd(sparx5, LRN_COMMON_ACCESS_CTRL);
@@ -50,7 +39,7 @@ static int sparx5_mact_wait_for_completion(struct sparx5 *sparx5)
 {
 	u32 val;
 
-	return readx_poll_timeout(sparx5_mact_get_status,
+	return readx_poll_timeout_atomic(sparx5_mact_get_status,
 		sparx5, val,
 		LRN_COMMON_ACCESS_CTRL_MAC_TABLE_ACCESS_SHOT_GET(val) == 0,
 		TABLE_UPDATE_SLEEP_US, TABLE_UPDATE_TIMEOUT_US);
@@ -80,19 +69,20 @@ static void sparx5_mact_select(struct sparx5 *sparx5,
 int sparx5_mact_learn(struct sparx5 *sparx5, int pgid,
 		      const unsigned char mac[ETH_ALEN], u16 vid)
 {
-	const struct sparx5_consts *consts = sparx5->data->consts;
+	const struct sparx5_consts *consts = &sparx5->data->consts;
+	unsigned long flags;
 	int addr, type, ret;
 
-	if (pgid < consts->n_ports) {
+	if (pgid < consts->chip_ports) {
 		type = MAC_ENTRY_ADDR_TYPE_UPSID_PN;
 		addr = pgid % 32;
 		addr += (pgid / 32) << 5; /* Add upsid */
 	} else {
 		type = MAC_ENTRY_ADDR_TYPE_MC_IDX;
-		addr = pgid - consts->n_ports;
+		addr = pgid - consts->chip_ports;
 	}
 
-	mutex_lock(&sparx5->lock);
+	spin_lock_irqsave(&sparx5->lock, flags);
 
 	sparx5_mact_select(sparx5, mac, vid);
 
@@ -111,7 +101,7 @@ int sparx5_mact_learn(struct sparx5 *sparx5, int pgid,
 
 	ret = sparx5_mact_wait_for_completion(sparx5);
 
-	mutex_unlock(&sparx5->lock);
+	spin_unlock_irqrestore(&sparx5->lock, flags);
 
 	return ret;
 }
@@ -129,8 +119,9 @@ int sparx5_mc_sync(struct net_device *dev, const unsigned char *addr)
 	struct sparx5_port *port = netdev_priv(dev);
 	struct sparx5 *sparx5 = port->sparx5;
 
-	return sparx5_mact_learn(sparx5, sparx5_get_pgid(sparx5, PGID_CPU),
-				 addr, port->pvid);
+	return sparx5_mact_learn(sparx5,
+				 sparx5_get_pgid_index(sparx5, PGID_CPU), addr,
+				 port->pvid);
 }
 
 static int sparx5_mact_get(struct sparx5 *sparx5,
@@ -161,10 +152,11 @@ static int sparx5_mact_get(struct sparx5 *sparx5,
 bool sparx5_mact_getnext(struct sparx5 *sparx5,
 			 unsigned char mac[ETH_ALEN], u16 *vid, u32 *pcfg2)
 {
+	unsigned long flags;
 	u32 cfg2;
 	int ret;
 
-	mutex_lock(&sparx5->lock);
+	spin_lock_irqsave(&sparx5->lock, flags);
 
 	sparx5_mact_select(sparx5, mac, *vid);
 
@@ -183,7 +175,7 @@ bool sparx5_mact_getnext(struct sparx5 *sparx5,
 			*pcfg2 = cfg2;
 	}
 
-	mutex_unlock(&sparx5->lock);
+	spin_unlock_irqrestore(&sparx5->lock, flags);
 
 	return ret == 0;
 }
@@ -191,10 +183,11 @@ bool sparx5_mact_getnext(struct sparx5 *sparx5,
 int sparx5_mact_find(struct sparx5 *sparx5,
 		     const unsigned char mac[ETH_ALEN], u16 vid, u32 *pcfg2)
 {
+	unsigned long flags;
 	int ret;
 	u32 cfg2;
 
-	mutex_lock(&sparx5->lock);
+	spin_lock_irqsave(&sparx5->lock, flags);
 
 	sparx5_mact_select(sparx5, mac, vid);
 
@@ -212,7 +205,7 @@ int sparx5_mact_find(struct sparx5 *sparx5,
 			ret = -ENOENT;
 	}
 
-	mutex_unlock(&sparx5->lock);
+	spin_unlock_irqrestore(&sparx5->lock, flags);
 
 	return ret;
 }
@@ -220,9 +213,10 @@ int sparx5_mact_find(struct sparx5 *sparx5,
 int sparx5_mact_forget(struct sparx5 *sparx5,
 		       const unsigned char mac[ETH_ALEN], u16 vid)
 {
+	unsigned long flags;
 	int ret;
 
-	mutex_lock(&sparx5->lock);
+	spin_lock_irqsave(&sparx5->lock, flags);
 
 	sparx5_mact_select(sparx5, mac, vid);
 
@@ -233,7 +227,7 @@ int sparx5_mact_forget(struct sparx5 *sparx5,
 
 	ret = sparx5_mact_wait_for_completion(sparx5);
 
-	mutex_unlock(&sparx5->lock);
+	spin_unlock_irqrestore(&sparx5->lock, flags);
 
 	return ret;
 }
@@ -242,6 +236,7 @@ static struct sparx5_mact_entry *alloc_mact_entry(struct sparx5 *sparx5,
 						  const unsigned char *mac,
 						  u16 vid, u16 port_index)
 {
+	struct sparx5_port *port = sparx5->ports[port_index];
 	struct sparx5_mact_entry *mact_entry;
 
 	mact_entry = devm_kzalloc(sparx5->dev,
@@ -252,6 +247,12 @@ static struct sparx5_mact_entry *alloc_mact_entry(struct sparx5 *sparx5,
 	memcpy(mact_entry->mac, mac, ETH_ALEN);
 	mact_entry->vid = vid;
 	mact_entry->port = port_index;
+
+	spin_lock(&sparx5->lock);
+	mact_entry->lag = !!(mact_entry->port < sparx5->data->consts.chip_ports &&
+			     port->lag_master);
+	spin_unlock(&sparx5->lock);
+
 	return mact_entry;
 }
 
@@ -278,14 +279,21 @@ static struct sparx5_mact_entry *find_mact_entry(struct sparx5 *sparx5,
 
 static void sparx5_fdb_call_notifiers(enum switchdev_notifier_type type,
 				      const char *mac, u16 vid,
-				      struct net_device *dev, bool offloaded)
+				      struct sparx5_port *port, bool offloaded)
 {
 	struct switchdev_notifier_fdb_info info = {};
+	struct sparx5 *sparx5 = port->sparx5;
+	struct net_device *ndev;
 
 	info.addr = mac;
 	info.vid = vid;
 	info.offloaded = offloaded;
-	call_switchdev_notifiers(type, dev, &info.info, NULL);
+
+	spin_lock(&sparx5->lock);
+	ndev = (port->lag_master ? port->lag_master : port->ndev);
+	spin_unlock(&sparx5->lock);
+
+	call_switchdev_notifiers(type, ndev, &info.info, NULL);
 }
 
 int sparx5_add_mact_entry(struct sparx5 *sparx5,
@@ -293,6 +301,7 @@ int sparx5_add_mact_entry(struct sparx5 *sparx5,
 			  u16 portno,
 			  const unsigned char *addr, u16 vid)
 {
+	struct sparx5_port *port = netdev_priv(dev);
 	struct sparx5_mact_entry *mact_entry;
 	int ret;
 	u32 cfg2;
@@ -321,15 +330,14 @@ int sparx5_add_mact_entry(struct sparx5 *sparx5,
 	mutex_lock(&sparx5->mact_lock);
 	list_add_tail(&mact_entry->list, &sparx5->mact_entries);
 	mutex_unlock(&sparx5->mact_lock);
-
 update_hw:
 	ret = sparx5_mact_learn(sparx5, portno, addr, vid);
 
 	/* New entry? */
 	if (mact_entry->flags == 0) {
 		mact_entry->flags |= MAC_ENT_LOCK; /* Don't age this */
-		sparx5_fdb_call_notifiers(SWITCHDEV_FDB_ADD_TO_BRIDGE, addr, vid,
-					  dev, true);
+		sparx5_fdb_call_notifiers(SWITCHDEV_FDB_ADD_TO_BRIDGE, addr,
+					  vid, port, true);
 	}
 
 	return ret;
@@ -364,6 +372,7 @@ static void sparx5_mact_handle_entry(struct sparx5 *sparx5,
 				     unsigned char mac[ETH_ALEN],
 				     u16 vid, u32 cfg2)
 {
+	const struct sparx5_consts *consts = &sparx5->data->consts;
 	struct sparx5_mact_entry *mact_entry;
 	bool found = false;
 	u16 port;
@@ -373,7 +382,7 @@ static void sparx5_mact_handle_entry(struct sparx5 *sparx5,
 		return;
 
 	port = LRN_MAC_ACCESS_CFG_2_MAC_ENTRY_ADDR_GET(cfg2);
-	if (port >= sparx5->data->consts->n_ports)
+	if (port >= consts->chip_ports)
 		return;
 
 	if (!test_bit(port, sparx5->bridge_mask))
@@ -414,18 +423,18 @@ static void sparx5_mact_handle_entry(struct sparx5 *sparx5,
 	}
 
 	/* New or moved entry - notify bridge */
-	sparx5_fdb_call_notifiers(SWITCHDEV_FDB_ADD_TO_BRIDGE,
-				  mac, vid, sparx5->ports[port]->ndev,
-				  true);
+	sparx5_fdb_call_notifiers(SWITCHDEV_FDB_ADD_TO_BRIDGE, mac, vid,
+				  sparx5->ports[port], true);
 }
 
-void sparx5_mact_pull_work(struct work_struct *work)
+static void sparx5_mact_pull_work(struct work_struct *work)
 {
 	struct delayed_work *del_work = to_delayed_work(work);
 	struct sparx5 *sparx5 = container_of(del_work, struct sparx5,
 					     mact_work);
 	struct sparx5_mact_entry *mact_entry, *tmp;
 	unsigned char mac[ETH_ALEN];
+	unsigned long flags;
 	u32 cfg2;
 	u16 vid;
 	int ret;
@@ -440,7 +449,7 @@ void sparx5_mact_pull_work(struct work_struct *work)
 	vid = 0;
 	memset(mac, 0, sizeof(mac));
 	do {
-		mutex_lock(&sparx5->lock);
+		spin_lock_irqsave(&sparx5->lock, flags);
 		sparx5_mact_select(sparx5, mac, vid);
 		spx5_wr(LRN_SCAN_NEXT_CFG_SCAN_NEXT_UNTIL_FOUND_ENA_SET(1),
 			sparx5, LRN_SCAN_NEXT_CFG);
@@ -451,7 +460,7 @@ void sparx5_mact_pull_work(struct work_struct *work)
 		ret = sparx5_mact_wait_for_completion(sparx5);
 		if (ret == 0)
 			ret = sparx5_mact_get(sparx5, mac, &vid, &cfg2);
-		mutex_unlock(&sparx5->lock);
+		spin_unlock_irqrestore(&sparx5->lock, flags);
 		if (ret == 0)
 			sparx5_mact_handle_entry(sparx5, mac, vid, cfg2);
 	} while (ret == 0);
@@ -465,7 +474,7 @@ void sparx5_mact_pull_work(struct work_struct *work)
 
 		sparx5_fdb_call_notifiers(SWITCHDEV_FDB_DEL_TO_BRIDGE,
 					  mact_entry->mac, mact_entry->vid,
-					  sparx5->ports[mact_entry->port]->ndev,
+					  sparx5->ports[mact_entry->port],
 					  true);
 
 		list_del(&mact_entry->list);
@@ -489,9 +498,11 @@ void sparx5_set_ageing(struct sparx5 *sparx5, int msecs)
 		 LRN_AUTOAGE_CFG(0));
 }
 
-void sparx5_mact_init(struct sparx5 *sparx5)
+int sparx5_mact_init(struct sparx5 *sparx5)
 {
-	mutex_init(&sparx5->lock);
+	char queue_name[32];
+
+	spin_lock_init(&sparx5->lock);
 
 	/*  Flush MAC table */
 	spx5_wr(LRN_COMMON_ACCESS_CTRL_CPU_ACCESS_CMD_SET(MAC_CMD_CLEAR_ALL) |
@@ -502,4 +513,26 @@ void sparx5_mact_init(struct sparx5 *sparx5)
 		dev_warn(sparx5->dev, "MAC flush error\n");
 
 	sparx5_set_ageing(sparx5, BR_DEFAULT_AGEING_TIME / HZ * 1000);
+
+	/* Init mact_sw struct */
+	mutex_init(&sparx5->mact_lock);
+	INIT_LIST_HEAD(&sparx5->mact_entries);
+	snprintf(queue_name, sizeof(queue_name), "%s-mact",
+		 dev_name(sparx5->dev));
+	sparx5->mact_queue = create_singlethread_workqueue(queue_name);
+	if (!sparx5->mact_queue)
+		return -ENOMEM;
+
+	INIT_DELAYED_WORK(&sparx5->mact_work, sparx5_mact_pull_work);
+	queue_delayed_work(sparx5->mact_queue, &sparx5->mact_work,
+			   SPX5_MACT_PULL_DELAY);
+
+	return 0;
+}
+
+void sparx5_mact_deinit(struct sparx5 *sparx5)
+{
+	cancel_delayed_work(&sparx5->mact_work);
+	destroy_workqueue(sparx5->mact_queue);
+	mutex_destroy(&sparx5->mact_lock);
 }

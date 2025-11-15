@@ -7,7 +7,7 @@
 #include "sparx5_main_regs.h"
 #include "sparx5_main.h"
 
-struct sparx5_sdlb_group sdlb_groups[SPX5_SDLB_GROUP_CNT] = {
+static struct sparx5_sdlb_group sdlb_groups[SPX5_SDLB_GROUP_CNT] = {
 	{ SPX5_SDLB_GROUP_RATE_MAX,    8192 / 1, 64 }, /*  25 G */
 	{ 15000000000ULL,              8192 / 1, 64 }, /*  15 G */
 	{ 10000000000ULL,              8192 / 1, 64 }, /*  10 G */
@@ -71,7 +71,7 @@ static void sparx5_sdlb_group_enable(struct sparx5 *sparx5, u32 group)
 		 ANA_AC_SDLB_PUP_CTRL(group));
 }
 
-static u32 sparx5_sdlb_group_get_first(struct sparx5 *sparx5, u32 group)
+u32 sparx5_sdlb_group_get_first(struct sparx5 *sparx5, u32 group)
 {
 	u32 val;
 
@@ -80,8 +80,8 @@ static u32 sparx5_sdlb_group_get_first(struct sparx5 *sparx5, u32 group)
 	return ANA_AC_SDLB_XLB_START_LBSET_START_GET(val);
 }
 
-static u32 sparx5_sdlb_group_get_next(struct sparx5 *sparx5, u32 group,
-				      u32 lb)
+u32 sparx5_sdlb_group_get_next(struct sparx5 *sparx5, u32 group,
+			       u32 lb)
 {
 	u32 val;
 
@@ -90,8 +90,8 @@ static u32 sparx5_sdlb_group_get_next(struct sparx5 *sparx5, u32 group,
 	return ANA_AC_SDLB_XLB_NEXT_LBSET_NEXT_GET(val);
 }
 
-static bool sparx5_sdlb_group_is_first(struct sparx5 *sparx5, u32 group,
-				       u32 lb)
+bool sparx5_sdlb_group_is_first(struct sparx5 *sparx5, u32 group,
+				u32 lb)
 {
 	return lb == sparx5_sdlb_group_get_first(sparx5, group);
 }
@@ -102,7 +102,7 @@ static bool sparx5_sdlb_group_is_last(struct sparx5 *sparx5, u32 group,
 	return lb == sparx5_sdlb_group_get_next(sparx5, group, lb);
 }
 
-static bool sparx5_sdlb_group_is_empty(struct sparx5 *sparx5, u32 group)
+bool sparx5_sdlb_group_is_empty(struct sparx5 *sparx5, u32 group)
 {
 	u32 val;
 
@@ -179,14 +179,15 @@ static int sparx5_sdlb_group_get_count(struct sparx5 *sparx5, u32 group)
 
 int sparx5_sdlb_group_get_by_rate(struct sparx5 *sparx5, u32 rate, u32 burst)
 {
-	const struct sparx5_ops *ops = sparx5->data->ops;
+	const struct sparx5_consts *consts = &sparx5->data->consts;
+	const struct sparx5_ops *ops = &sparx5->data->ops;
 	const struct sparx5_sdlb_group *group;
 	u64 rate_bps;
 	int i, count;
 
 	rate_bps = rate * 1000;
 
-	for (i = sparx5->data->consts->n_lb_groups - 1; i >= 0; i--) {
+	for (i = consts->lb_group_cnt - 1; i >= 0; i--) {
 		group = ops->get_sdlb_group(i);
 
 		count = sparx5_sdlb_group_get_count(sparx5, i);
@@ -210,7 +211,7 @@ int sparx5_sdlb_group_get_by_index(struct sparx5 *sparx5, u32 idx, u32 *group)
 	u32 itr, next;
 	int i;
 
-	for (i = 0; i < sparx5->data->consts->n_lb_groups; i++) {
+	for (i = 0; i < SPX5_SDLB_GROUP_CNT; i++) {
 		if (sparx5_sdlb_group_is_empty(sparx5, i))
 			continue;
 
@@ -305,7 +306,7 @@ int sparx5_sdlb_group_del(struct sparx5 *sparx5, u32 group, u32 idx)
 void sparx5_sdlb_group_init(struct sparx5 *sparx5, u64 max_rate, u32 min_burst,
 			    u32 frame_size, u32 idx)
 {
-	const struct sparx5_ops *ops = sparx5->data->ops;
+	const struct sparx5_ops *ops = &sparx5->data->ops;
 	u32 thres_shift, mask = 0x01, power = 0;
 	struct sparx5_sdlb_group *group;
 	u64 max_token;

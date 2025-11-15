@@ -32,19 +32,7 @@ sparx5_phylink_mac_select_pcs(struct phylink_config *config,
 {
 	struct sparx5_port *port = netdev_priv(to_net_dev(config->dev));
 
-	/* Return the PCS for all the modes that require it. */
-	switch (interface) {
-	case PHY_INTERFACE_MODE_SGMII:
-	case PHY_INTERFACE_MODE_QSGMII:
-	case PHY_INTERFACE_MODE_1000BASEX:
-	case PHY_INTERFACE_MODE_2500BASEX:
-	case PHY_INTERFACE_MODE_5GBASER:
-	case PHY_INTERFACE_MODE_10GBASER:
-	case PHY_INTERFACE_MODE_25GBASER:
-		return &port->phylink_pcs;
-	default:
-		return NULL;
-	}
+	return &port->phylink_pcs;
 }
 
 static void sparx5_phylink_mac_config(struct phylink_config *config,
@@ -89,7 +77,7 @@ static struct sparx5_port *sparx5_pcs_to_port(struct phylink_pcs *pcs)
 	return container_of(pcs, struct sparx5_port, phylink_pcs);
 }
 
-static void sparx5_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
+static void sparx5_pcs_get_state(struct phylink_pcs *pcs,
 				 struct phylink_link_state *state)
 {
 	struct sparx5_port *port = sparx5_pcs_to_port(pcs);
@@ -110,7 +98,13 @@ static int sparx5_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 {
 	struct sparx5_port *port = sparx5_pcs_to_port(pcs);
 	struct sparx5_port_config conf;
+	const struct sparx5_ops *ops;
 	int ret = 0;
+
+	ops = &port->sparx5->data->ops;
+
+	if (ops->port_is_rgmii(port->portno))
+		return 0;
 
 	conf = port->conf;
 	conf.power_down = false;

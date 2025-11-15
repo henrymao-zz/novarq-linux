@@ -12,6 +12,7 @@
 #define SPX5_MIRROR_DISABLED 0
 #define SPX5_MIRROR_EGRESS 1
 #define SPX5_MIRROR_INGRESS 2
+#define SPX5_MIRROR_MONITOR_PORT_DEFAULT 65
 #define SPX5_QFWD_MP_OFFSET 9 /* Mirror port offset in the QFWD register */
 
 /* Convert from bool ingress/egress to mirror direction */
@@ -21,7 +22,7 @@ static u32 sparx5_mirror_to_dir(bool ingress)
 }
 
 /* Get ports belonging to this mirror */
-static u64 sparx5_mirror_port_get(struct sparx5 *sparx5, u32 idx)
+u64 sparx5_mirror_port_get(struct sparx5 *sparx5, u32 idx)
 {
 	u64 val;
 
@@ -74,7 +75,7 @@ static bool sparx5_mirror_is_empty(struct sparx5 *sparx5, u32 idx)
 }
 
 /* Get direction of mirror */
-static u32 sparx5_mirror_dir_get(struct sparx5 *sparx5, u32 idx)
+u32 sparx5_mirror_dir_get(struct sparx5 *sparx5, u32 idx)
 {
 	u32 val = spx5_rd(sparx5, ANA_AC_PROBE_CFG(idx));
 
@@ -99,7 +100,7 @@ static void sparx5_mirror_monitor_set(struct sparx5 *sparx5, u32 idx,
 }
 
 /* Get the monitor port of this mirror */
-static u32 sparx5_mirror_monitor_get(struct sparx5 *sparx5, u32 idx)
+u32 sparx5_mirror_monitor_get(struct sparx5 *sparx5, u32 idx)
 {
 	u32 val = spx5_rd(sparx5,
 			  QFWD_FRAME_COPY_CFG(idx + SPX5_QFWD_MP_OFFSET));
@@ -199,7 +200,7 @@ void sparx5_mirror_del(struct sparx5_mall_entry *entry)
 
 	sparx5_mirror_monitor_set(sparx5,
 				  mirror_idx,
-				  sparx5->data->consts->n_ports);
+				  sparx5->data->consts.chip_ports);
 }
 
 void sparx5_mirror_stats(struct sparx5_mall_entry *entry,

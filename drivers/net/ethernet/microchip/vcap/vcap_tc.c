@@ -50,6 +50,16 @@ int vcap_tc_flower_handler_ethaddr_usage(struct vcap_tc_flower_parse_usage *st)
 			goto out;
 	}
 
+	if (!is_zero_ether_addr(match.mask->dst) &&
+	    is_broadcast_ether_addr(match.key->dst))
+		st->frame_type = VCAP_TC_FRAME_TYPE_BROADCAST;
+	else if (!is_zero_ether_addr(match.mask->dst) &&
+		 is_multicast_ether_addr(match.key->dst))
+		st->frame_type = VCAP_TC_FRAME_TYPE_MULTICAST;
+	else if (!is_zero_ether_addr(match.mask->dst) &&
+		 is_unicast_ether_addr(match.key->dst))
+		st->frame_type = VCAP_TC_FRAME_TYPE_UNICAST;
+
 	st->used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS);
 
 	return err;
@@ -66,7 +76,6 @@ int vcap_tc_flower_handler_ipv4_usage(struct vcap_tc_flower_parse_usage *st)
 
 	if (st->l3_proto == ETH_P_IP) {
 		struct flow_match_ipv4_addrs mt;
-
 		flow_rule_match_ipv4_addrs(st->frule, &mt);
 		if (mt.mask->src) {
 			err = vcap_rule_add_key_u32(st->vrule,

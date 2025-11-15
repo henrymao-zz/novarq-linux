@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0+
 
 #include "vcap_api.h"
-#include "lan969x.h"
+#include "../sparx5_vcap_impl.h"
 
 const struct sparx5_vcap_inst lan969x_vcap_inst_cfg[] = {
 	{
@@ -81,5 +81,17 @@ const struct sparx5_vcap_inst lan969x_vcap_inst_cfg[] = {
 		.last_cid = SPARX5_VCAP_CID_ES2_MAX,
 		.count = 1024,
 		.ingress = false,
+	},
+	{
+		.vtype = VCAP_TYPE_LPM,
+		.vinst = 0,
+		.map_id = 6,
+		.lookups = SPARX5_LPM_LOOKUPS,
+		.lookups_per_instance = SPARX5_LPM_LOOKUPS,
+		.first_cid = SPARX5_VCAP_CID_LPM_L0,
+		.last_cid = SPARX5_VCAP_CID_LPM_MAX,
+		.blockno = 5,
+		.blocks = 1,
+		.ingress = true,
 	},
 };

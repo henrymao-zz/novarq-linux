@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0+
-/* Microchip lan969x Switch driver
- *
- * Copyright (c) 2024 Microchip Technology Inc. and its subsidiaries.
- */
 
 #include "lan969x.h"
 
-#define LAN969X_SDLB_GRP_CNT 5
-#define LAN969X_HSCH_LEAK_GRP_CNT 4
+#define LAN969X_DSM_CAL_TAXIS               5
+#define LAN969X_SDLB_GROUP_COUNT            5
 
 static const struct sparx5_main_io_resource lan969x_main_iomap[] =  {
 	{ TARGET_CPU,                   0xc0000, 0 }, /* 0xe00c0000 */
 	{ TARGET_FDMA,                  0xc0400, 0 }, /* 0xe00c0400 */
+	{ TARGET_PCIE_DBI,             0x400000, 0 }, /* 0xe0400000 */
 	{ TARGET_GCB,                 0x2010000, 1 }, /* 0xe2010000 */
 	{ TARGET_QS,                  0x2030000, 1 }, /* 0xe2030000 */
 	{ TARGET_PTP,                 0x2040000, 1 }, /* 0xe2040000 */
@@ -24,6 +21,7 @@ static const struct sparx5_main_io_resource lan969x_main_iomap[] =  {
 	{ TARGET_VCAP_ES2,            0x20d0000, 1 }, /* 0xe20d0000 */
 	{ TARGET_VCAP_ES0,            0x20e0000, 1 }, /* 0xe20e0000 */
 	{ TARGET_ANA_AC_POL,          0x2200000, 1 }, /* 0xe2200000 */
+	{ TARGET_AFI,                 0x2240000, 1 }, /* 0xe2240000 */
 	{ TARGET_QRES,                0x2280000, 1 }, /* 0xe2280000 */
 	{ TARGET_EACL,                0x22c0000, 1 }, /* 0xe22c0000 */
 	{ TARGET_ANA_CL,              0x2400000, 1 }, /* 0xe2400000 */
@@ -31,6 +29,7 @@ static const struct sparx5_main_io_resource lan969x_main_iomap[] =  {
 	{ TARGET_ANA_AC_SDLB,         0x2500000, 1 }, /* 0xe2500000 */
 	{ TARGET_HSCH,                0x2580000, 1 }, /* 0xe2580000 */
 	{ TARGET_REW,                 0x2600000, 1 }, /* 0xe2600000 */
+	{ TARGET_VOP_MRP,             0x2700000, 1 }, /* 0xe2700000 */
 	{ TARGET_ANA_L2,              0x2800000, 1 }, /* 0xe2800000 */
 	{ TARGET_ANA_AC,              0x2900000, 1 }, /* 0xe2900000 */
 	{ TARGET_VOP,                 0x2a00000, 1 }, /* 0xe2a00000 */
@@ -94,11 +93,42 @@ static const struct sparx5_main_io_resource lan969x_main_iomap[] =  {
 	{ TARGET_DEVRGMII +  1,       0x30e8000, 1 }, /* 0xe30e8000 */
 	{ TARGET_DSM,                 0x30ec000, 1 }, /* 0xe30ec000 */
 	{ TARGET_PORT_CONF,           0x30f0000, 1 }, /* 0xe30f0000 */
+	{ TARGET_RB,                  0x30f4000, 1 }, /* 0xe30f4000 */
+	{ TARGET_RB +  1,             0x30f8000, 1 }, /* 0xe30f8000 */
+	{ TARGET_RB +  2,             0x30fc000, 1 }, /* 0xe30fc000 */
+	{ TARGET_RB +  3,             0x3100000, 1 }, /* 0xe3100000 */
+	{ TARGET_RB +  4,             0x3104000, 1 }, /* 0xe3104000 */
 	{ TARGET_ASM,                 0x3200000, 1 }, /* 0xe3200000 */
 	{ TARGET_HSIO_WRAP,           0x3408000, 1 }, /* 0xe3408000 */
 };
 
-static struct sparx5_sdlb_group lan969x_sdlb_groups[LAN969X_SDLB_GRP_CNT] = {
+static u32 lan969x_taxi_ports[LAN969X_DSM_CAL_TAXIS][LAN969X_DSM_CAL_MAX_DEVS_PER_TAXI] = {
+	{  0,  4,  1,  2,  3,  5,  6,  7, 28, 29 },
+	{  8, 12,  9, 13, 10, 11, 14, 15, 99, 99 },
+	{ 16, 20, 17, 21, 18, 19, 22, 23, 99, 99 },
+	{ 24, 25, 99, 99, 99, 99, 99, 99, 99, 99 },
+	{ 26, 27, 99, 99, 99, 99, 99, 99, 99, 99 }
+};
+
+static const u32 lan969x_ifh[IFH_MAX][2] = {
+	[IFH_MISC_CPU_MASK_DPORT]  = {  29,  8 },
+	[IFH_MISC_PIPELINE_PT]     = {  37,  5 },
+	[IFH_MISC_PIPELINE_ACT]    = {  42,  3 },
+	[IFH_FWD_SRC_PORT]         = {  46,  6 },
+	[IFH_FWD_SFLOW_ID]         = {  56,  7 },
+	[IFH_FWD_UPDATE_FCS]       = {  66,  1 },
+	[IFH_FWD_AFI]              = {  71,  1 },
+	[IFH_VSTAX_REW_CMD]        = { 105, 10 },
+	[IFH_VSTAX_INGR_DROP_MODE] = { 128,  1 },
+	[IFH_VSTAX_CL_QOS]         = { 129,  3 },
+	[IFH_VSTAX_SP]             = { 132,  1 },
+	[IFH_VSTAX_RSV]            = { 152,  1 },
+	[IFH_DST_PDU_TYPE]         = { 190,  4 },
+	[IFH_DST_PDU_W16_OFFSET]   = { 194,  6 },
+	[IFH_TS_TSTAMP]            = { 232, 38 },
+};
+
+static struct sparx5_sdlb_group lan969x_sdlb_groups[LAN969X_SDLB_GROUP_COUNT] = {
 	{ 1000000000,  8192 / 2, 64 }, /*    1 G */
 	{  500000000,  8192 / 2, 64 }, /*  500 M */
 	{  100000000,  8192 / 4, 64 }, /*  100 M */
@@ -106,23 +136,82 @@ static struct sparx5_sdlb_group lan969x_sdlb_groups[LAN969X_SDLB_GRP_CNT] = {
 	{    5000000,  8192 / 8, 64 }, /*   10 M */
 };
 
-static u32 lan969x_hsch_max_group_rate[LAN969X_HSCH_LEAK_GRP_CNT] = {
+static const u32 lan969x_hsch_max_group_rate[SPX5_HSCH_LEAK_GRP_CNT] = {
 	655355, 1048568, 6553550, 10485680
 };
-
-static struct sparx5_sdlb_group *lan969x_get_sdlb_group(int idx)
-{
-	return &lan969x_sdlb_groups[idx];
-}
 
 static u32 lan969x_get_hsch_max_group_rate(int grp)
 {
 	return lan969x_hsch_max_group_rate[grp];
 }
 
+static u32 *lan969x_get_taxi(int idx)
+{
+	return lan969x_taxi_ports[idx];
+}
+
+inline u32 lan969x_get_ifh_field_pos(enum sparx5_ifh_enum idx)
+{
+	return lan969x_ifh[idx][0];
+}
+
+inline u32 lan969x_get_ifh_field_width(enum sparx5_ifh_enum idx)
+{
+	return lan969x_ifh[idx][1];
+}
+
+u32 lan969x_get_packet_pipeline_pt(enum sparx5_packet_pipeline_pt pt)
+{
+	return pt;
+}
+
+static int lan969x_port_mux_set(struct sparx5 *sparx5, struct sparx5_port *port,
+			 struct sparx5_port_config *conf)
+{
+	u32 portno = port->portno;
+	u32 inst;
+
+	if (port->conf.portmode == conf->portmode)
+		return 0; /* Nothing to do */
+
+	switch (conf->portmode) {
+	case PHY_INTERFACE_MODE_QSGMII: /* QSGMII: 4x2G5 devices. Mode Q'  */
+		inst = (portno - portno % 4) / 4;
+		spx5_rmw(BIT(inst), BIT(inst), sparx5, PORT_CONF_QSGMII_ENA);
+		break;
+	case PHY_INTERFACE_MODE_10G_QXGMII:
+		if (portno >= 8 && portno <= 23) {
+			/* equals index 2-5 */
+			inst = portno / 4;
+
+			spx5_rmw(PORT_CONF_USXGMII_CFG_TX_ENA_SET(1) |
+				 PORT_CONF_USXGMII_CFG_RX_ENA_SET(1) |
+				 PORT_CONF_USXGMII_CFG_NUM_PORTS_SET(SPX5_USXGMII_QUAD),
+				 PORT_CONF_USXGMII_CFG_TX_ENA |
+				 PORT_CONF_USXGMII_CFG_RX_ENA |
+				 PORT_CONF_USXGMII_CFG_NUM_PORTS,
+				 sparx5,
+				 PORT_CONF_USXGMII_CFG(inst));
+
+			spx5_rmw(BIT(inst),
+				 BIT(inst),
+				 sparx5,
+				 PORT_CONF_USXGMII_ENA);
+		} else {
+			return -EINVAL;
+		}
+	default:
+		break;
+	}
+	return 0;
+}
+
+/* Get the bit position of the device, when configuring mode for 5G/10G devices */
 static u32 lan969x_get_dev_mode_bit(struct sparx5 *sparx5, int port)
 {
-	if (lan969x_port_is_2g5(port) || lan969x_port_is_5g(port))
+	const struct sparx5_ops *ops = &sparx5->data->ops;
+
+	if (ops->port_is_2g5(port) || ops->port_is_5g(port))
 		return port;
 
 	/* 10G */
@@ -142,7 +231,18 @@ static u32 lan969x_get_dev_mode_bit(struct sparx5 *sparx5, int port)
 
 static u32 lan969x_port_dev_mapping(struct sparx5 *sparx5, int port)
 {
-	if (lan969x_port_is_5g(port)) {
+	const struct sparx5_ops *ops = &sparx5->data->ops;
+
+	if (ops->port_is_rgmii(port)) {
+		switch (port) {
+		case 28:
+			return 0;
+		case 29:
+			return 1;
+		}
+	}
+
+	if (ops->port_is_5g(port)) {
 		switch (port) {
 		case 9:
 			return 0;
@@ -155,7 +255,7 @@ static u32 lan969x_port_dev_mapping(struct sparx5 *sparx5, int port)
 		}
 	}
 
-	if (lan969x_port_is_10g(port)) {
+	if (ops->port_is_10g(port)) {
 		switch (port) {
 		case 0:
 			return 0;
@@ -184,24 +284,9 @@ static u32 lan969x_port_dev_mapping(struct sparx5 *sparx5, int port)
 	return port;
 }
 
-static int lan969x_port_mux_set(struct sparx5 *sparx5, struct sparx5_port *port,
-				struct sparx5_port_config *conf)
+static struct sparx5_sdlb_group *lan969x_get_sdlb_group(int idx)
 {
-	u32 portno = port->portno;
-	u32 inst;
-
-	if (port->conf.portmode == conf->portmode)
-		return 0; /* Nothing to do */
-
-	switch (conf->portmode) {
-	case PHY_INTERFACE_MODE_QSGMII: /* QSGMII: 4x2G5 devices. Mode Q'  */
-		inst = (portno - portno % 4) / 4;
-		spx5_rmw(BIT(inst), BIT(inst), sparx5, PORT_CONF_QSGMII_ENA);
-		break;
-	default:
-		break;
-	}
-	return 0;
+	return &lan969x_sdlb_groups[idx];
 }
 
 static irqreturn_t lan969x_ptp_irq_handler(int irq, void *args)
@@ -218,44 +303,44 @@ static irqreturn_t lan969x_ptp_irq_handler(int irq, void *args)
 		u32 val, id, txport;
 		u32 delay;
 
-		val = spx5_rd(sparx5, PTP_TWOSTEP_CTRL);
+		val = spx5_rd(sparx5, PTP_PTP_TWOSTEP_CTRL);
 
 		/* Check if a timestamp can be retrieved */
-		if (!(val & PTP_TWOSTEP_CTRL_PTP_VLD))
+		if (!(val & PTP_PTP_TWOSTEP_CTRL_PTP_VLD))
 			break;
 
-		WARN_ON(val & PTP_TWOSTEP_CTRL_PTP_OVFL);
+		WARN_ON(val & PTP_PTP_TWOSTEP_CTRL_PTP_OVFL);
 
-		if (!(val & PTP_TWOSTEP_CTRL_STAMP_TX))
+		if (!(val & PTP_PTP_TWOSTEP_CTRL_STAMP_TX))
 			continue;
 
 		/* Retrieve the ts Tx port */
-		txport = PTP_TWOSTEP_CTRL_STAMP_PORT_GET(val);
+		txport = PTP_PTP_TWOSTEP_CTRL_STAMP_PORT_GET(val);
 
 		/* Retrieve its associated skb */
 		port = sparx5->ports[txport];
 
 		/* Retrieve the delay */
-		delay = spx5_rd(sparx5, PTP_TWOSTEP_STAMP_NSEC);
-		delay = PTP_TWOSTEP_STAMP_NSEC_NS_GET(delay);
+		delay = spx5_rd(sparx5, PTP_PTP_TWOSTEP_STAMP_NSEC);
+		delay = PTP_PTP_TWOSTEP_STAMP_NSEC_STAMP_NSEC_GET(delay);
 
 		/* Get next timestamp from fifo, which needs to be the
 		 * rx timestamp which represents the id of the frame
 		 */
-		spx5_rmw(PTP_TWOSTEP_CTRL_PTP_NXT_SET(1),
-			 PTP_TWOSTEP_CTRL_PTP_NXT,
-			 sparx5, PTP_TWOSTEP_CTRL);
+		spx5_rmw(PTP_PTP_TWOSTEP_CTRL_PTP_NXT_SET(1),
+			 PTP_PTP_TWOSTEP_CTRL_PTP_NXT,
+			 sparx5, PTP_PTP_TWOSTEP_CTRL);
 
-		val = spx5_rd(sparx5, PTP_TWOSTEP_CTRL);
+		val = spx5_rd(sparx5, PTP_PTP_TWOSTEP_CTRL);
 
-		/* Check if a timestamp can be retrieved */
-		if (!(val & PTP_TWOSTEP_CTRL_PTP_VLD))
+		/* Check if a timestamp can be retried */
+		if (!(val & PTP_PTP_TWOSTEP_CTRL_PTP_VLD))
 			break;
 
 		/* Read RX timestamping to get the ID */
-		id = spx5_rd(sparx5, PTP_TWOSTEP_STAMP_NSEC);
+		id = spx5_rd(sparx5, PTP_PTP_TWOSTEP_STAMP_NSEC);
 		id <<= 8;
-		id |= spx5_rd(sparx5, PTP_TWOSTEP_STAMP_SUBNS);
+		id |= spx5_rd(sparx5, PTP_PTP_TWOSTEP_STAMP_SUBNS);
 
 		spin_lock_irqsave(&port->tx_skbs.lock, flags);
 		skb_queue_walk_safe(&port->tx_skbs, skb, skb_tmp) {
@@ -269,21 +354,21 @@ static irqreturn_t lan969x_ptp_irq_handler(int irq, void *args)
 		spin_unlock_irqrestore(&port->tx_skbs.lock, flags);
 
 		/* Next ts */
-		spx5_rmw(PTP_TWOSTEP_CTRL_PTP_NXT_SET(1),
-			 PTP_TWOSTEP_CTRL_PTP_NXT,
-			 sparx5, PTP_TWOSTEP_CTRL);
+		spx5_rmw(PTP_PTP_TWOSTEP_CTRL_PTP_NXT_SET(1),
+			 PTP_PTP_TWOSTEP_CTRL_PTP_NXT,
+			 sparx5, PTP_PTP_TWOSTEP_CTRL);
 
 		if (WARN_ON(!skb_match))
 			continue;
 
-		spin_lock_irqsave(&sparx5->ptp_ts_id_lock, flags);
+		spin_lock(&sparx5->ptp_ts_id_lock);
 		sparx5->ptp_skbs--;
-		spin_unlock_irqrestore(&sparx5->ptp_ts_id_lock, flags);
+		spin_unlock(&sparx5->ptp_ts_id_lock);
 
 		/* Get the h/w timestamp */
-		sparx5_get_hwtimestamp(sparx5, &ts, delay);
+		sparx5_ptp_get_hwtimestamp(sparx5, &ts, delay);
 
-		/* Set the timestamp in the skb */
+		/* Set the timestamp into the skb */
 		shhwtstamps.hwtstamp = ktime_set(ts.tv_sec, ts.tv_nsec);
 		skb_tstamp_tx(skb_match, &shhwtstamps);
 
@@ -293,65 +378,122 @@ static irqreturn_t lan969x_ptp_irq_handler(int irq, void *args)
 	return IRQ_HANDLED;
 }
 
-static const struct sparx5_regs lan969x_regs = {
-	.tsize = lan969x_tsize,
-	.gaddr = lan969x_gaddr,
-	.gcnt  = lan969x_gcnt,
-	.gsize = lan969x_gsize,
-	.raddr = lan969x_raddr,
-	.rcnt  = lan969x_rcnt,
-	.fpos  = lan969x_fpos,
-	.fsize = lan969x_fsize,
-};
+static enum sparx5_cal_bw
+lan969x_get_internal_port_cal_speed(struct sparx5 *sparx5, u32 portno)
+{
+	if (portno == sparx5_get_internal_port(sparx5, PORT_CPU_0) ||
+	    portno == sparx5_get_internal_port(sparx5, PORT_CPU_1)) {
+		return SPX5_CAL_SPEED_1G;
+	} else if (portno == sparx5_get_internal_port(sparx5, PORT_VD0)) {
+		/* IPMC only idle BW */
+		return SPX5_CAL_SPEED_NONE;
+	} else if (portno == sparx5_get_internal_port(sparx5, PORT_VD1)) {
+		/* OAM only idle BW */
+		return SPX5_CAL_SPEED_NONE;
+	} else if (portno == sparx5_get_internal_port(sparx5, PORT_VD2)) {
+		/* IPinIP gets only idle BW */
+		return SPX5_CAL_SPEED_NONE;
+	}
+	/* not in port map */
+	return SPX5_CAL_SPEED_NONE;
+}
 
-static const struct sparx5_consts lan969x_consts = {
-	.n_ports             = 30,
-	.n_ports_all         = 35,
-	.n_hsch_l1_elems     = 32,
-	.n_hsch_queues       = 4,
-	.n_lb_groups         = 5,
-	.n_pgids             = 1054, /* (1024 + n_ports) */
-	.n_sio_clks          = 1,
-	.n_own_upsids        = 1,
-	.n_auto_cals         = 4,
-	.n_filters           = 256,
-	.n_gates             = 256,
-	.n_sdlbs             = 496,
-	.n_dsm_cal_taxis     = 5,
-	.buf_size            = 1572864,
-	.qres_max_prio_idx   = 315,
-	.qres_max_colour_idx = 323,
-	.tod_pin             = 4,
-	.vcaps               = lan969x_vcaps,
-	.vcap_stats          = &lan969x_vcap_stats,
-	.vcaps_cfg           = lan969x_vcap_inst_cfg,
-};
+static int lan969x_port_get_10g_qxgmii_idx(struct sparx5 *sparx5,
+					   struct sparx5_port *port,
+					   size_t idx)
+{
+	uint8_t map[][4] = { { 8,  9, 10, 11},
+			     {12, 13, 14, 15},
+			     {16, 17, 18, 19},
+			     {20, 21, 22, 23}};
 
-static const struct sparx5_ops lan969x_ops = {
-	.is_port_2g5             = &lan969x_port_is_2g5,
-	.is_port_5g              = &lan969x_port_is_5g,
-	.is_port_10g             = &lan969x_port_is_10g,
-	.is_port_25g             = &lan969x_port_is_25g,
-	.is_port_rgmii           = &lan969x_port_is_rgmii,
-	.get_port_dev_index      = &lan969x_port_dev_mapping,
-	.get_port_dev_bit        = &lan969x_get_dev_mode_bit,
-	.get_hsch_max_group_rate = &lan969x_get_hsch_max_group_rate,
-	.get_sdlb_group          = &lan969x_get_sdlb_group,
-	.set_port_mux            = &lan969x_port_mux_set,
-	.ptp_irq_handler         = &lan969x_ptp_irq_handler,
-	.dsm_calendar_calc       = &lan969x_dsm_calendar_calc,
-	.port_config_rgmii       = &lan969x_port_config_rgmii,
-	.fdma_init               = &lan969x_fdma_init,
-	.fdma_deinit             = &lan969x_fdma_deinit,
-	.fdma_poll               = &lan969x_fdma_napi_poll,
-	.fdma_xmit               = &lan969x_fdma_xmit,
-};
+	for (int i = 0; i < ARRAY_SIZE(map); ++i) {
+		for (int j = 0; j < ARRAY_SIZE(map[i]); ++j) {
+			if (port->portno != map[i][j])
+				continue;
+
+			return map[i][idx];
+		}
+	}
+
+	return -ENODEV;
+}
 
 const struct sparx5_match_data lan969x_desc = {
-	.iomap      = lan969x_main_iomap,
+	.iomap = lan969x_main_iomap,
 	.iomap_size = ARRAY_SIZE(lan969x_main_iomap),
-	.ioranges   = 2,
-	.regs       = &lan969x_regs,
-	.consts     = &lan969x_consts,
-	.ops        = &lan969x_ops,
+	.ioranges = 2,
+	.regs = {
+		.tsize = lan969x_tsize,
+		.gaddr = lan969x_gaddr,
+		.gcnt = lan969x_gcnt,
+		.gsize = lan969x_gsize,
+		.raddr = lan969x_raddr,
+		.rcnt = lan969x_rcnt,
+		.fpos = lan969x_fpos,
+		.fsize = lan969x_fsize,
+	},
+	.ops = {
+		.port_mux_set = &lan969x_port_mux_set,
+		.port_is_2g5 = &lan969x_port_is_2g5,
+		.port_is_5g = &lan969x_port_is_5g,
+		.port_is_10g = &lan969x_port_is_10g,
+		.port_is_rgmii = &lan969x_port_is_rgmii,
+		.port_get_dev_index = &lan969x_port_dev_mapping,
+		.get_dev_mode_bit = &lan969x_get_dev_mode_bit,
+		.get_sdlb_group = &lan969x_get_sdlb_group,
+		.get_ifh_field_pos = &lan969x_get_ifh_field_pos,
+		.get_ifh_field_width = &lan969x_get_ifh_field_width,
+		.get_pipeline_pt = &lan969x_get_packet_pipeline_pt,
+		.get_taxi = &lan969x_get_taxi,
+		.get_mtu = &sparx5_mtu_max,
+		.get_hsch_max_group_rate = &lan969x_get_hsch_max_group_rate,
+#ifndef CONFIG_MFD_LAN969X_PCI
+		.fdma_deinit = lan969x_fdma_deinit,
+		.fdma_init = lan969x_fdma_init,
+		.fdma_resize = lan969x_fdma_resize,
+		.fdma_xmit = lan969x_fdma_xmit,
+		.fdma_poll = lan969x_fdma_napi_poll,
+#else
+		.fdma_deinit = lan969x_fdma_pci_stop,
+		.fdma_init = lan969x_fdma_pci_start,
+		.fdma_resize = lan969x_fdma_pci_resize,
+		.fdma_xmit = lan969x_fdma_pci_xmit,
+		.fdma_poll = lan969x_fdma_pci_napi_poll,
+#endif
+		.ptp_irq_handler = lan969x_ptp_irq_handler,
+		.get_internal_port_cal_speed = &lan969x_get_internal_port_cal_speed,
+		.dsm_calendar_calc = &lan969x_dsm_calendar_calc,
+		.port_get_10g_qxgmii_idx = &lan969x_port_get_10g_qxgmii_idx,
+	},
+	.consts = {
+		.chip_ports = 30,
+		.chip_ports_all = 35,
+		.buffer_memory = 1572864,
+		.res_cfg_max_port_idx = 280,
+		.res_cfg_max_prio_idx = 315,
+		.res_cfg_max_colour_idx = 323,
+		.hsch_l1_se_cnt = 32,
+		.hsch_queue_cnt = 4,
+		.lb_group_cnt = 5,
+		.pgid_cnt = (1024 + 30),
+		.dsm_cal_taxis = 5,
+		.sio_clk_cnt = 1,
+		.own_upsid_cnt = 1,
+		.auto_cal_cnt = 4,
+		.pol_acl_cnt = 32,
+		.filter_cnt = 256,
+		.gate_cnt = 256,
+		.lb_cnt = 496,
+		.tod_pin = 7,
+		.vmid_cnt = 127,
+		.arp_tbl_cnt = 1024,
+		.vcaps = lan969x_vcaps,
+		.vcaps_cfg = lan969x_vcap_inst_cfg,
+		.vcap_stats = &lan969x_vcap_stats,
+		.ptp_pins = 7,
+		.bum_slb_cnt = 128,
+		.isdx_cnt = 1024,
+	},
 };
+MODULE_LICENSE("Dual MIT/GPL");
